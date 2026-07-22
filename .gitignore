@@ -14,3 +14,4 @@ aibot_last_script.sh
 # OS junk
 .DS_Store
 Thumbs.db
+.aider*
