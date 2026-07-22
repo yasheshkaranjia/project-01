@@ -48,6 +48,17 @@ def validate_api_key() -> None:
         print('  export ANTHROPIC_API_KEY="sk-ant-...."')
         sys.exit(1)
 
+def create_api_payload(user_request: str) -> dict:
+    """Create the payload for Claude API request."""
+    return {
+        "model": MODEL,
+        "max_tokens": 1024,
+        "system": SYSTEM_PROMPT,
+        "messages": [
+            {"role": "user", "content": user_request}
+        ],
+    }
+
 def get_api_headers() -> dict:
     """Get headers for Claude API request."""
     return {
