@@ -55,6 +55,12 @@ python aibot.py
    automatically.
 5. If you approve, the script runs.
 
+## Troubleshooting
+
+- **API errors**: Verify your API key is set correctly and has sufficient credits
+- **Script not running**: Check file permissions on the generated script (`chmod +x aibot_last_script.sh`)
+- **Missing packages**: The script may require additional Termux packages - check the generated script for `pkg install` commands
+
 ## Safety notes
 
 - **Always read the generated script before approving it.** AI-generated

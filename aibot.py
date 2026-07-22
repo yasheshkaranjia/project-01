@@ -41,13 +41,16 @@ Rules:
 - Keep it as simple as possible while doing the job well.
 """
 
-def ask_claude(user_request: str) -> str:
+def validate_api_key() -> None:
+    """Validate the API key is set before making requests."""
     if not API_KEY:
         print("ERROR: Set ANTHROPIC_API_KEY environment variable first.")
         print('  export ANTHROPIC_API_KEY="sk-ant-...."')
         sys.exit(1)
 
-    payload = {
+def create_api_payload(user_request: str) -> dict:
+    """Create the payload for Claude API request."""
+    return {
         "model": MODEL,
         "max_tokens": 1024,
         "system": SYSTEM_PROMPT,
@@ -71,12 +74,24 @@ def ask_claude(user_request: str) -> str:
 
 
 def extract_script(ai_text: str) -> str:
-    """Pull the bash code block out of the AI's reply."""
+    """Extract bash script from AI's response text.
+    
+    Args:
+        ai_text: Raw text response from Claude
+        
+    Returns:
+        Extracted bash script content
+        
+    Note:
+        If no code block markers are found, assumes entire response is the script
+    """
+    # Try to find code block with optional language specifier
     match = re.search(r"```(?:bash|sh)?\n(.*?)```", ai_text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # fallback: if no code fence, assume whole reply is the script
-    return ai_text.strip()
+    if not match:
+        # Fallback: look for unmarked code block
+        match = re.search(r"```\n(.*?)```", ai_text, re.DOTALL)
+    
+    return match.group(1).strip() if match else ai_text.strip()
 
 
 def main():
