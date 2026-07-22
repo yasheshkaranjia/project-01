@@ -48,29 +48,39 @@ def validate_api_key() -> None:
         print('  export ANTHROPIC_API_KEY="sk-ant-...."')
         sys.exit(1)
 
-def create_api_payload(user_request: str) -> dict:
-    """Create the payload for Claude API request."""
+def get_api_headers() -> dict:
+    """Get headers for Claude API request."""
     return {
-        "model": MODEL,
-        "max_tokens": 1024,
-        "system": SYSTEM_PROMPT,
-        "messages": [
-            {"role": "user", "content": user_request}
-        ],
-    }
-    headers = {
         "x-api-key": API_KEY,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
 
-    resp = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
+def ask_claude(user_request: str) -> str:
+    """Send request to Claude API and return the response text.
+    
+    Args:
+        user_request: The user's request in plain English
+        
+    Returns:
+        The raw text response from Claude
+        
+    Raises:
+        requests.exceptions.RequestException: If API request fails
+    """
+    validate_api_key()
+    payload = create_api_payload(user_request)
+    headers = get_api_headers()
 
-    text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
-    full_text = "\n".join(text_blocks)
-    return full_text
+    try:
+        resp = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+        return "\n".join(text_blocks)
+    except requests.exceptions.RequestException as e:
+        print(f"API request failed: {e}")
+        sys.exit(1)
 
 
 def extract_script(ai_text: str) -> str:
