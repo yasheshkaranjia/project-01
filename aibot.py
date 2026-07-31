@@ -2,15 +2,26 @@
 """
 Termux AI Bot
 -------------
-Ask it to do something in plain English, it asks Claude to write a
-Termux-compatible bash script, shows you the script, and (only after
-you confirm) runs it.
+Ask it to do something in plain English, it asks an AI (Claude or an
+OpenRouter model) to write a Termux-compatible bash script, shows you
+the script, and (only after you confirm) runs it.
 
 Setup on your phone (Termux):
     pkg update && pkg upgrade
     pkg install python
     pip install requests
-    export ANTHROPIC_API_KEY="sk-ant-...."      # put your real key here
+
+    # Choose ONE provider:
+
+    # Option A: Anthropic (Claude) directly
+    export AI_PROVIDER="anthropic"
+    export ANTHROPIC_API_KEY="sk-ant-...."
+
+    # Option B: OpenRouter (many free models)
+    export AI_PROVIDER="openrouter"
+    export OPENROUTER_API_KEY="sk-or-v1-...."
+    export OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"  # optional override
+
     python aibot.py
 
 Usage:
@@ -25,9 +36,16 @@ import re
 import json
 import requests
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-sonnet-4-6"
+PROVIDER = os.environ.get("AI_PROVIDER", "anthropic").strip().lower()
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+
 SCRIPT_PATH = os.path.expanduser("~/aibot_last_script.sh")
 
 SYSTEM_PROMPT = """You write short bash scripts that run inside Termux on Android.
@@ -41,50 +59,39 @@ Rules:
 - Keep it as simple as possible while doing the job well.
 """
 
-def validate_api_key() -> None:
-    """Validate the API key is set before making requests."""
-    if not API_KEY:
-        print("ERROR: Set ANTHROPIC_API_KEY environment variable first.")
-        print('  export ANTHROPIC_API_KEY="sk-ant-...."')
+
+def validate_config() -> None:
+    """Validate the right API key is set for the chosen provider."""
+    if PROVIDER == "anthropic":
+        if not ANTHROPIC_API_KEY:
+            print("ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set.")
+            print('  export ANTHROPIC_API_KEY="sk-ant-...."')
+            sys.exit(1)
+    elif PROVIDER == "openrouter":
+        if not OPENROUTER_API_KEY:
+            print("ERROR: AI_PROVIDER=openrouter but OPENROUTER_API_KEY is not set.")
+            print('  export OPENROUTER_API_KEY="sk-or-v1-...."')
+            sys.exit(1)
+    else:
+        print(f"ERROR: Unknown AI_PROVIDER '{PROVIDER}'. Use 'anthropic' or 'openrouter'.")
         sys.exit(1)
 
-def create_api_payload(user_request: str) -> dict:
-    """Create the payload for Claude API request."""
-    return {
-        "model": MODEL,
+
+def ask_claude(user_request: str) -> str:
+    """Send request to Anthropic's API and return the response text."""
+    payload = {
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 1024,
         "system": SYSTEM_PROMPT,
-        "messages": [
-            {"role": "user", "content": user_request}
-        ],
+        "messages": [{"role": "user", "content": user_request}],
     }
-
-def get_api_headers() -> dict:
-    """Get headers for Claude API request."""
-    return {
-        "x-api-key": API_KEY,
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-
-def ask_claude(user_request: str) -> str:
-    """Send request to Claude API and return the response text.
-    
-    Args:
-        user_request: The user's request in plain English
-        
-    Returns:
-        The raw text response from Claude
-        
-    Raises:
-        requests.exceptions.RequestException: If API request fails
-    """
-    validate_api_key()
-    payload = create_api_payload(user_request)
-    headers = get_api_headers()
-
     try:
-        resp = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=60)
+        resp = requests.post(ANTHROPIC_API_URL, headers=headers, data=json.dumps(payload), timeout=60)
         resp.raise_for_status()
         data = resp.json()
         text_blocks = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
@@ -94,24 +101,46 @@ def ask_claude(user_request: str) -> str:
         sys.exit(1)
 
 
+def ask_openrouter(user_request: str) -> str:
+    """Send request to OpenRouter's API and return the response text."""
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_request},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(OPENROUTER_API_URL, headers=headers, data=json.dumps(payload), timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            print(f"Unexpected response from OpenRouter: {data}")
+            sys.exit(1)
+        return choices[0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        print(f"API request failed: {e}")
+        sys.exit(1)
+
+
+def ask_ai(user_request: str) -> str:
+    """Dispatch to the configured provider."""
+    validate_config()
+    if PROVIDER == "anthropic":
+        return ask_claude(user_request)
+    return ask_openrouter(user_request)
+
+
 def extract_script(ai_text: str) -> str:
-    """Extract bash script from AI's response text.
-    
-    Args:
-        ai_text: Raw text response from Claude
-        
-    Returns:
-        Extracted bash script content
-        
-    Note:
-        If no code block markers are found, assumes entire response is the script
-    """
-    # Try to find code block with optional language specifier
+    """Extract bash script from AI's response text."""
     match = re.search(r"```(?:bash|sh)?\n(.*?)```", ai_text, re.DOTALL)
     if not match:
-        # Fallback: look for unmarked code block
         match = re.search(r"```\n(.*?)```", ai_text, re.DOTALL)
-    
     return match.group(1).strip() if match else ai_text.strip()
 
 
@@ -125,8 +154,8 @@ def main():
         print("No request given, exiting.")
         return
 
-    print("\n[Asking AI to write the script...]\n")
-    ai_reply = ask_claude(request)
+    print(f"\n[Asking {PROVIDER} to write the script...]\n")
+    ai_reply = ask_ai(request)
     script = extract_script(ai_reply)
 
     print("----- Generated script -----")
