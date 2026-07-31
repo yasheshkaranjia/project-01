@@ -20,13 +20,13 @@ Setup on your phone (Termux):
     # Option B: OpenRouter (many free models)
     export AI_PROVIDER="openrouter"
     export OPENROUTER_API_KEY="sk-or-v1-...."
-    export OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"  # optional override
+    export OPENROUTER_MODEL="openrouter/free"  # optional override
 
     python aibot.py
 
 Usage:
     python aibot.py "play an online radio station"
-    # or run with no args to enter interactive mode
+    # or run with no args to enter interactive menu mode
 """
 
 import os
@@ -44,7 +44,7 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
 
 SCRIPT_PATH = os.path.expanduser("~/aibot_last_script.sh")
 
@@ -58,6 +58,12 @@ Rules:
 - Never include destructive commands (no rm -rf /, no formatting storage, no modifying system files).
 - Keep it as simple as possible while doing the job well.
 """
+
+FAVORITES = {
+    "1": "play an online radio station",
+    "2": "check the weather using a terminal weather tool",
+    "3": "start an FTP server on the Download folder using pyftpdlib",
+}
 
 
 def validate_config() -> None:
@@ -144,11 +150,31 @@ def extract_script(ai_text: str) -> str:
     return match.group(1).strip() if match else ai_text.strip()
 
 
+def show_menu() -> str:
+    print("\n=== Termux AI Bot ===")
+    print("1) Play online radio")
+    print("2) Check weather")
+    print("3) Start FTP server")
+    print("4) Custom request")
+    print("5) Exit")
+    return input("> ").strip()
+
+
 def main():
     if len(sys.argv) > 1:
         request = " ".join(sys.argv[1:])
     else:
-        request = input("What do you want your Termux bot to do?\n> ").strip()
+        choice = show_menu()
+        if choice == "5":
+            print("Bye!")
+            return
+        elif choice == "4":
+            request = input("What do you want your Termux bot to do?\n> ").strip()
+        elif choice in FAVORITES:
+            request = FAVORITES[choice]
+        else:
+            print("Invalid choice.")
+            return
 
     if not request:
         print("No request given, exiting.")
@@ -166,8 +192,8 @@ def main():
         f.write(script)
     os.chmod(SCRIPT_PATH, 0o755)
 
-    choice = input("Run this script now? [y/N]: ").strip().lower()
-    if choice == "y":
+    run_choice = input("Run this script now? [y/N]: ").strip().lower()
+    if run_choice == "y":
         print("\n[Running...]\n")
         subprocess.run(["bash", SCRIPT_PATH])
     else:
