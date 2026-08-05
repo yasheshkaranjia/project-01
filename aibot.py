@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
 """
-Termux AI Bot
+Termux AI Bot (Improved)
 -------------
-A menu-driven AI assistant for Termux. Supports:
-  1) Chat mode        - open conversation with the AI
-  2) Code mode         - generates a Termux-compatible bash script, asks to run it
-  3) API Keys          - add/view/change/clear your API key and provider
-  4) History           - view past requests and replies
-  5) Session Log       - see what happened this session
-  6) Help              - usage info
-  7) Credits           - about this tool
-  8) Exit
-
-Setup on your phone (Termux):
-    pkg update && pkg upgrade
-    pkg install python
-    pip install requests
-    python aibot.py
-
-On first run, it will ask you to choose a provider and enter your API key,
-then save it so you don't have to enter it again.
+A menu-driven AI assistant for Termux.
 """
 
 import os
@@ -28,7 +11,6 @@ import json
 import re
 import subprocess
 from datetime import datetime
-
 import requests
 
 CONFIG_DIR = os.path.expanduser("~/.termux_ai_bot")
@@ -37,18 +19,16 @@ HISTORY_PATH = os.path.join(CONFIG_DIR, "history.json")
 SCRIPT_PATH = os.path.expanduser("~/aibot_last_script.sh")
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
-
+ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022" # Updated to latest standard sonnet model format
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 
-SHELL_SYSTEM_PROMPT = """You write short bash scripts that run inside Termux on Android.
-
+# BASE System prompt (context will be injected at runtime)
+BASE_SHELL_SYSTEM_PROMPT = """You write short bash scripts that run inside Termux on Android.
 Rules:
 - Output ONLY a single bash code block. No explanation before or after.
 - The script must be self-contained and runnable on Termux (assume `pkg` package manager, not `apt`).
-- If a package is needed (e.g. mpv, ffmpeg, curl, termux-api tools), include a `pkg install -y <package>` line at the top, but skip re-installing if already present (use `command -v` checks).
-- Prefer well-known, reliable, legal public streams/tools for tasks like radio, weather, etc.
+- If a package is needed, include a `pkg install -y <package>` line at the top, but skip re-installing if already present.
 - Never include destructive commands (no rm -rf /, no formatting storage, no modifying system files).
 - Keep it as simple as possible while doing the job well.
 """
@@ -57,11 +37,36 @@ CHAT_SYSTEM_PROMPT = "You are a helpful, concise AI assistant chatting with a us
 
 session_log = []
 
-
 def log(event: str) -> None:
     stamp = datetime.now().strftime("%H:%M:%S")
     session_log.append(f"[{stamp}] {event}")
 
+# ---------- Context & Safety ----------
+
+def get_system_context() -> str:
+    """Grabs basic Termux context to help the AI write better scripts."""
+    try:
+        uname = subprocess.check_output(["uname", "-a"], text=True, stderr=subprocess.DEVNULL).strip()
+        pwd = subprocess.check_output(["pwd"], text=True, stderr=subprocess.DEVNULL).strip()
+        return f"\n\nCURRENT SYSTEM CONTEXT:\n- OS/Kernel: {uname}\n- Current Directory: {pwd}"
+    except Exception:
+        return ""
+
+def is_safe_script(script: str) -> list:
+    """Scans the script for potentially dangerous commands."""
+    dangers = []
+    # Regex patterns for dangerous commands
+    patterns = {
+        r"rm\s+-r": "Recursive remove (rm -r)",
+        r"mkfs": "Filesystem creation (mkfs)",
+        r"dd\s+if=": "Low-level copy (dd)",
+        r">\s*/dev/": "Writing directly to device files",
+        r"chmod\s+-R\s+777": "Recursive full permissions (chmod -R 777)"
+    }
+    for pattern, warning in patterns.items():
+        if re.search(pattern, script):
+            dangers.append(warning)
+    return dangers
 
 # ---------- Config (API key management) ----------
 
@@ -71,20 +76,17 @@ def load_config() -> dict:
             return json.load(f)
     return {}
 
-
 def save_config(cfg: dict) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
     os.chmod(CONFIG_PATH, 0o600)
 
-
 def setup_api_key(cfg: dict) -> dict:
     print("\n=== API Key Setup ===")
     print("1) Anthropic (Claude)")
     print("2) OpenRouter (many free models)")
     choice = input("Choose provider [1/2]: ").strip()
-
     if choice == "1":
         key = input("Enter your Anthropic API key (sk-ant-...): ").strip()
         cfg["provider"] = "anthropic"
@@ -95,12 +97,10 @@ def setup_api_key(cfg: dict) -> dict:
         cfg["provider"] = "openrouter"
         cfg["openrouter_api_key"] = key
         cfg["openrouter_model"] = model if model else DEFAULT_OPENROUTER_MODEL
-
     save_config(cfg)
     print("Saved.\n")
     log(f"API key configured for provider={cfg['provider']}")
     return cfg
-
 
 def manage_api_keys(cfg: dict) -> dict:
     while True:
@@ -114,12 +114,10 @@ def manage_api_keys(cfg: dict) -> dict:
             key = cfg.get("openrouter_api_key", "")
             print(f"OpenRouter key: {mask_key(key)}")
             print(f"Model: {cfg.get('openrouter_model', DEFAULT_OPENROUTER_MODEL)}")
-
         print("\n1) Change / set API key")
         print("2) Clear saved key")
         print("3) Back to main menu")
         choice = input("> ").strip()
-
         if choice == "1":
             cfg = setup_api_key(cfg)
         elif choice == "2":
@@ -135,7 +133,6 @@ def manage_api_keys(cfg: dict) -> dict:
         else:
             print("Invalid choice.")
 
-
 def mask_key(key: str) -> str:
     if not key:
         return "(none)"
@@ -143,13 +140,11 @@ def mask_key(key: str) -> str:
         return "****"
     return f"{key[:8]}...{key[-4:]}"
 
-
 def ensure_config(cfg: dict) -> dict:
     if not cfg.get("provider"):
         print("No API key configured yet.")
         cfg = setup_api_key(cfg)
     return cfg
-
 
 # ---------- AI calls ----------
 
@@ -162,7 +157,6 @@ def call_ai(cfg: dict, system_prompt: str, user_message: str) -> str:
     else:
         print("ERROR: no provider configured.")
         sys.exit(1)
-
 
 def call_anthropic(cfg: dict, system_prompt: str, user_message: str) -> str:
     payload = {
@@ -184,7 +178,6 @@ def call_anthropic(cfg: dict, system_prompt: str, user_message: str) -> str:
         return "\n".join(text_blocks)
     except requests.exceptions.RequestException as e:
         return f"[ERROR] API request failed: {e}"
-
 
 def call_openrouter(cfg: dict, system_prompt: str, user_message: str) -> str:
     model = cfg.get("openrouter_model", DEFAULT_OPENROUTER_MODEL)
@@ -210,13 +203,11 @@ def call_openrouter(cfg: dict, system_prompt: str, user_message: str) -> str:
     except requests.exceptions.RequestException as e:
         return f"[ERROR] API request failed: {e}"
 
-
 def extract_script(ai_text: str) -> str:
     match = re.search(r"```(?:bash|sh)?\n(.*?)```", ai_text, re.DOTALL)
     if not match:
         match = re.search(r"```\n(.*?)```", ai_text, re.DOTALL)
     return match.group(1).strip() if match else ai_text.strip()
-
 
 # ---------- History ----------
 
@@ -226,13 +217,11 @@ def load_history() -> list:
             return json.load(f)
     return []
 
-
 def save_history(history: list) -> None:
     os.makedirs(CONFIG_DIR, exist_ok=True)
     # Keep last 100 entries only
     with open(HISTORY_PATH, "w") as f:
         json.dump(history[-100:], f, indent=2)
-
 
 def add_to_history(mode: str, request: str, reply: str) -> None:
     history = load_history()
@@ -244,7 +233,6 @@ def add_to_history(mode: str, request: str, reply: str) -> None:
     })
     save_history(history)
 
-
 def view_history() -> None:
     history = load_history()
     if not history:
@@ -255,7 +243,6 @@ def view_history() -> None:
         print(f"\n{i}. [{entry['time']}] ({entry['mode']})")
         print(f"   You: {entry['request'][:80]}")
         print(f"   AI:  {entry['reply'][:120]}")
-
 
 # ---------- Modes ----------
 
@@ -273,76 +260,94 @@ def chat_mode(cfg: dict) -> None:
         add_to_history("chat", user_message, reply)
         log("Chat reply received")
 
-
 def code_mode(cfg: dict) -> None:
     print("\n=== Code Mode ===")
     request = input("What do you want your Termux bot to do?\n> ").strip()
     if not request:
         print("No request given.")
         return
-
     log(f"Code request: {request[:50]}")
-    print("\n[Asking AI to write the script...]\n")
-    ai_reply = call_ai(cfg, SHELL_SYSTEM_PROMPT, request)
-    script = extract_script(ai_reply)
-
-    print("----- Generated script -----")
-    print(script)
-    print("-----------------------------\n")
-
-    add_to_history("code", request, script)
-    log("Code reply received")
-
-    with open(SCRIPT_PATH, "w") as f:
-        f.write(script)
-    os.chmod(SCRIPT_PATH, 0o755)
-
-    run_choice = input("Run this script now? [y/N]: ").strip().lower()
-    if run_choice == "y":
-        print("\n[Running...]\n")
-        log("Ran generated script")
-        subprocess.run(["bash", SCRIPT_PATH])
-    else:
-        print(f"Not run. Saved at {SCRIPT_PATH} — you can review/run it manually with:")
-        print(f"  bash {SCRIPT_PATH}")
-        log("Did not run generated script")
-
+    
+    # Inject context into system prompt
+    current_system_prompt = BASE_SHELL_SYSTEM_PROMPT + get_system_context()
+    
+    current_request = request
+    while True:
+        print("\n[Asking AI to write the script...]\n")
+        ai_reply = call_ai(cfg, current_system_prompt, current_request)
+        script = extract_script(ai_reply)
+        
+        print("----- Generated script -----")
+        print(script)
+        print("-----------------------------\n")
+        add_to_history("code", current_request, script)
+        log("Code reply received")
+        
+        with open(SCRIPT_PATH, "w") as f:
+            f.write(script)
+        os.chmod(SCRIPT_PATH, 0o755)
+        
+        # Safety Check
+        dangers = is_safe_script(script)
+        if dangers:
+            print("!!! WARNING: POTENTIALLY DANGEROUS COMMANDS DETECTED !!!")
+            for d in dangers:
+                print(f" - {d}")
+            print("Please review the script carefully before running.\n")
+        
+        run_choice = input("Run this script now? [y/N]: ").strip().lower()
+        if run_choice == "y":
+            print("\n[Running...]\n")
+            log("Ran generated script")
+            
+            # Capture output for Self-Healing
+            result = subprocess.run(["bash", SCRIPT_PATH], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                print(result.stdout)
+                print("\n[Success! Script finished without errors.]")
+                break # Exit the loop on success
+            else:
+                print(result.stdout)
+                print(f"\n[ERROR] Script exited with code {result.returncode}:\n{result.stderr.strip()}")
+                
+                # Self-Healing loop
+                fix_choice = input("\nAsk AI to fix this error? [y/N]: ").strip().lower()
+                if fix_choice == "y":
+                    current_request = f"My original request was: '{request}'.\nThe script you gave me failed with this error:\n{result.stderr}\nPlease provide a corrected bash script."
+                    log("Initiated self-healing sequence")
+                    continue # Loop back up and ask AI again
+                else:
+                    break # User declined fix, exit loop
+        else:
+            print(f"Not run. Saved at {SCRIPT_PATH} — you can review/run it manually with:")
+            print(f"  bash {SCRIPT_PATH}")
+            log("Did not run generated script")
+            break
 
 def show_help() -> None:
     print("""
 === Help ===
-
 1) Chat Mode    - Have an open conversation with the AI.
 2) Code Mode    - Describe a task in plain English; the AI writes a
                   Termux-compatible bash script. You review it, then
-                  choose whether to run it.
+                  choose whether to run it. If it fails, you can auto-fix it.
 3) API Keys     - Set, view (masked), change, or clear your API key
                   and provider (Anthropic or OpenRouter).
-4) History      - See your past requests and AI replies (saved to
-                  ~/.termux_ai_bot/history.json, last 100 entries).
+4) History      - See your past requests and AI replies.
 5) Session Log  - See a timestamped log of everything done this run.
 6) Help         - This screen.
 7) Credits      - About this tool.
 8) Exit         - Quit.
-
-Tips:
-- Your API key is stored locally at ~/.termux_ai_bot/config.json
-  (never share this file or commit it to GitHub).
-- Always review a generated script before choosing to run it.
 """)
-
 
 def show_credits() -> None:
     print("""
 === Credits ===
-
 Termux AI Bot
 A personal AI assistant for Termux, built with Python + requests.
 Supports Anthropic (Claude) and OpenRouter as providers.
-
-Made for yasheshkaranjia/project-01.
 """)
-
 
 def main_menu() -> str:
     print("\n=== Termux AI Bot ===")
@@ -356,14 +361,11 @@ def main_menu() -> str:
     print("8) Exit")
     return input("> ").strip()
 
-
 def main():
     cfg = load_config()
     cfg = ensure_config(cfg)
-
     while True:
         choice = main_menu()
-
         if choice == "1":
             cfg = ensure_config(cfg)
             chat_mode(cfg)
@@ -389,7 +391,6 @@ def main():
             break
         else:
             print("Invalid choice.")
-
 
 if __name__ == "__main__":
     main()
